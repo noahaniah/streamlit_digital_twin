@@ -8,24 +8,23 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-import plotly.express as px
-from datetime import datetime, timedelta
+import time
 import sys
 import os
+from datetime import datetime
 
-# Add utils to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'utils'))
 from helpers import (
-    SensorDataGenerator, 
-    HealthStatusCalculator, 
+    SensorDataGenerator,
+    HealthStatusCalculator,
     MLModelResults,
     CostBenefitAnalysis,
-    format_number,
-    format_percent,
-    format_currency
+    get_current_state_profile,
+    STATE_CYCLE,
+    format_number, format_percent, format_currency
 )
 
-# Page configuration
+# ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Digital Twin Dashboard - INYA-OKO, RAYMOND EKUMA",
     page_icon="🔧",
@@ -33,57 +32,49 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for styling
 st.markdown("""
-    <style>
-    .main-header {
-        text-align: center;
-        color: #1f77b4;
-        margin-bottom: 30px;
-    }
-    .developer-credit {
-        text-align: center;
-        color: #666;
-        font-size: 14px;
-        margin-top: 10px;
-        padding: 10px;
-        background-color: #f0f0f0;
-        border-radius: 5px;
-    }
-    .metric-card {
-        background-color: #f8f9fa;
-        padding: 15px;
-        border-radius: 8px;
-        border-left: 4px solid #1f77b4;
-    }
-    .status-normal {
-        color: #28a745;
-        font-weight: bold;
-    }
-    .status-degraded {
-        color: #ffc107;
-        font-weight: bold;
-    }
-    .status-critical {
-        color: #dc3545;
-        font-weight: bold;
-    }
-    </style>
+<style>
+.main-header   { text-align:center; color:#1f77b4; margin-bottom:20px; }
+.dev-credit    { text-align:center; color:#666; font-size:13px; padding:8px;
+                 background:#f0f0f0; border-radius:5px; margin-bottom:10px; }
+.state-banner  { text-align:center; font-size:22px; font-weight:bold;
+                 padding:14px; border-radius:8px; margin-bottom:16px;
+                 color:#fff; letter-spacing:1px; }
+</style>
 """, unsafe_allow_html=True)
 
-# Initialize session state
+# ── Session state init ────────────────────────────────────────────────────────
 if 'sensor_data' not in st.session_state:
-    generator = SensorDataGenerator()
-    st.session_state.sensor_data = generator.generate_data(n_samples=1000)
+    gen = SensorDataGenerator()
+    st.session_state.sensor_data = gen.generate_data(n_samples=1000)
+    st.session_state.generator   = gen
 
 if 'ml_results' not in st.session_state:
     st.session_state.ml_results = MLModelResults.get_mock_results()
 
-# Sidebar navigation
+# ── Get current live state ────────────────────────────────────────────────────
+state_profile = get_current_state_profile()
+
+# Append one live reading to rolling buffer
+st.session_state.sensor_data = st.session_state.generator.append_live_reading(
+    st.session_state.sensor_data, state_profile
+)
+
+# ── Sidebar ───────────────────────────────────────────────────────────────────
 st.sidebar.markdown("---")
 st.sidebar.title("🔧 Digital Twin Dashboard")
 st.sidebar.markdown("**By INYA-OKO, RAYMOND EKUMA**")
 st.sidebar.markdown("Master's Thesis Project")
+st.sidebar.markdown("---")
+
+# Live state indicator in sidebar
+sb_color = state_profile['color']
+st.sidebar.markdown(
+    f"<div style='background:{sb_color};color:#fff;padding:10px;border-radius:6px;"
+    f"text-align:center;font-weight:bold;font-size:15px;'>"
+    f"{state_profile['emoji']} ENGINE: {state_profile['state']}</div>",
+    unsafe_allow_html=True
+)
 st.sidebar.markdown("---")
 
 page = st.sidebar.radio(
@@ -93,483 +84,375 @@ page = st.sidebar.radio(
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("""
-### Project Information
+### Project Info
 - **Framework:** Streamlit + Python
-- **ML Models:** Random Forest & Neural Network
+- **ML Models:** Random Forest & ANN
 - **Data Source:** Kaggle
 - **Deployment:** Streamlit Cloud
 """)
+st.sidebar.markdown(
+    "<div class='dev-credit'><strong>INYA-OKO, RAYMOND EKUMA</strong><br>"
+    "Digital Twin — CAT C4.4 Engine</div>",
+    unsafe_allow_html=True
+)
 
-st.sidebar.markdown("---")
-st.sidebar.markdown("""
-<div class="developer-credit">
-    <p><strong>Built by INYA-OKO, RAYMOND EKUMA</strong></p>
-    <p>Digital Twin Framework for CAT C4.4 Engine</p>
-</div>
-""", unsafe_allow_html=True)
+# ── AUTO-REFRESH every 10 seconds ────────────────────────────────────────────
+# Calculate seconds remaining until next state transition
+import time as _time
+from helpers import TOTAL_CYCLE_DURATION, STATE_CYCLE as _SC
+_elapsed   = int(_time.time()) % TOTAL_CYCLE_DURATION
+_cum       = 0
+_remaining = 10
+for _s in _SC:
+    _cum += _s['duration']
+    if _elapsed < _cum:
+        _remaining = _cum - _elapsed
+        break
+st.sidebar.markdown(f"🔄 **Next update in:** `{_remaining}s`")
 
-# Page: Dashboard
+# Schedule rerun after 10 seconds
+time.sleep(0)  # yield control — actual rerun scheduled below via st.rerun trick
+_trigger = st.empty()
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PAGE: DASHBOARD
+# ═════════════════════════════════════════════════════════════════════════════
 if page == "📊 Dashboard":
-    st.markdown("""
-    <h1 class="main-header">🔧 Digital Twin Dashboard</h1>
-    <div class="developer-credit">
-        <strong>Predictive Maintenance Framework for Caterpillar C4.4 Engine</strong><br>
-        <em>Built by INYA-OKO, RAYMOND EKUMA</em>
-    </div>
-    """, unsafe_allow_html=True)
-    
+    st.markdown('<h1 class="main-header">🔧 Digital Twin Dashboard</h1>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="dev-credit"><strong>Predictive Maintenance Framework — Caterpillar C4.4 Engine</strong>'
+        '<br><em>INYA-OKO, RAYMOND EKUMA</em></div>',
+        unsafe_allow_html=True
+    )
+
+    # Live engine state banner
+    st.markdown(
+        f"<div class='state-banner' style='background:{state_profile['color']};'>"
+        f"{state_profile['emoji']}  CURRENT ENGINE STATE: {state_profile['state']}</div>",
+        unsafe_allow_html=True
+    )
+
+    ml = st.session_state.ml_results
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Model Accuracy",       f"{ml['random_forest']['accuracy']*100:.2f}%", "Random Forest")
+    c2.metric("RUL Prediction Error",  f"{ml['ann']['mae']:.4f}h",                   "MAE (hours)")
+    c3.metric("R² Score",              f"{ml['ann']['r2_score']:.4f}",               "Neural Network")
+    c4.metric("Cost Savings",          format_percent(ml['cost_benefit']['savings_percentage']), "Annual")
+
     st.markdown("---")
-    
-    # Key Metrics — pulled live from helpers (Chapter 4 actual values)
-    col1, col2, col3, col4 = st.columns(4)
-    
-    ml_results = st.session_state.ml_results
-    
-    with col1:
-        st.metric(
-            "Model Accuracy",
-            f"{ml_results['random_forest']['accuracy']*100:.2f}%",
-            "Random Forest"
-        )
-    
-    with col2:
-        st.metric(
-            "RUL Prediction Error",
-            f"{ml_results['ann']['mae']:.4f}h",
-            "MAE (hours)"
-        )
-    
-    with col3:
-        st.metric(
-            "R² Score",
-            f"{ml_results['ann']['r2_score']:.4f}",
-            "Neural Network"
-        )
-    
-    with col4:
-        st.metric(
-            "Cost Savings",
-            f"{format_percent(ml_results['cost_benefit']['savings_percentage'])}",
-            "Annual"
-        )
-    
+
+    # State cycle timeline
+    st.subheader("📅 Engine State Cycle (90-second loop)")
+    elapsed_now = int(_time.time()) % TOTAL_CYCLE_DURATION
+    cum = 0
+    timeline_fig = go.Figure()
+    for i, s in enumerate(_SC):
+        start = cum
+        end   = cum + s['duration']
+        timeline_fig.add_shape(type="rect",
+            x0=start, x1=end, y0=0, y1=1,
+            fillcolor=s['color'], opacity=0.25, line_width=0)
+        timeline_fig.add_annotation(
+            x=(start+end)/2, y=0.5,
+            text=f"{s['emoji']} {s['state']}<br>{s['duration']}s",
+            showarrow=False, font=dict(size=12, color=s['color']), yref="paper")
+        cum += s['duration']
+    # Current position marker
+    timeline_fig.add_shape(type="line",
+        x0=elapsed_now, x1=elapsed_now, y0=0, y1=1,
+        line=dict(color="black", width=3, dash="dash"), yref="paper")
+    timeline_fig.add_annotation(x=elapsed_now, y=1.05, text="▼ NOW",
+        showarrow=False, font=dict(size=11, color="black"), yref="paper")
+    timeline_fig.update_layout(
+        height=100, margin=dict(t=30, b=10, l=10, r=10),
+        xaxis=dict(range=[0, TOTAL_CYCLE_DURATION], showticklabels=False),
+        yaxis=dict(showticklabels=False, range=[0,1]),
+        plot_bgcolor="white", showlegend=False
+    )
+    st.plotly_chart(timeline_fig, use_container_width=True)
+
     st.markdown("---")
-    
-    # Project Overview
-    col1, col2 = st.columns(2)
-    
-    with col1:
+    c1, c2 = st.columns(2)
+    with c1:
         st.subheader("📌 Project Overview")
         st.write("""
-        The Digital Twin Dashboard is a comprehensive framework for predictive maintenance 
-        of the Caterpillar C4.4 diesel engine. This application combines machine learning, 
-        IoT sensor integration, and real-time visualization to enable condition-based 
+        The Digital Twin Dashboard is a comprehensive framework for predictive maintenance
+        of the Caterpillar C4.4 diesel engine. This application combines machine learning,
+        IoT sensor integration, and real-time visualization to enable condition-based
         maintenance scheduling.
-        
-        **Key Features:**
-        - Real-time sensor monitoring
-        - ML-based anomaly detection
-        - RUL prediction
-        - Maintenance scheduling
-        - Cost-benefit analysis
-        """)
-    
-    with col2:
-        st.subheader("🎯 Key Results (Chapter 4 — Actual Kaggle Output)")
-        # ── All numbers from Chapter 4 Tables 4.2, 4.3, and Section 4.4 ──
-        achievements = [
-            ("100.00%", "RF Classifier Accuracy (class-imbalance artefact)"),
-            ("32.01h",  "ANN RUL Prediction Error (MAE)"),
-            ("67.5%",   "Cost Reduction vs Conventional Maintenance"),
-            ("€162,000","Annual Savings per Engine"),
-        ]
-        for metric, description in achievements:
-            st.write(f"**{metric}** — {description}")
-        
-        st.caption(
-            "⚠️ RF Precision/Recall/F1 = 0% due to class imbalance "
-            "(Normal 70%, Degraded 25%, Critical 5%). "
-            "See Chapter 4.6.1 for discussion."
-        )
-    
-    st.markdown("---")
-    
-    # Technology Stack
-    st.subheader("🛠️ Technology Stack")
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.write("**Frontend**")
-        st.write("• Streamlit")
-        st.write("• Plotly")
-        st.write("• Pandas")
-    
-    with col2:
-        st.write("**ML & Data**")
-        st.write("• Python")
-        st.write("• Scikit-learn")
-        st.write("• TensorFlow")
-    
-    with col3:
-        st.write("**Data Processing**")
-        st.write("• NumPy")
-        st.write("• Pandas")
-        st.write("• Seaborn")
-    
-    with col4:
-        st.write("**Deployment**")
-        st.write("• Streamlit Cloud")
-        st.write("• Kaggle")
-        st.write("• GitHub")
 
-# Page: Real-Time Monitoring
+        **Key Features:**
+        - Live engine state simulation (NORMAL → DEGRADED → CRITICAL → RECOVERY)
+        - Real-time sensor monitoring with 10-second refresh
+        - ML-based anomaly detection & RUL prediction
+        - Maintenance scheduling & cost-benefit analysis
+        """)
+    with c2:
+        st.subheader("🎯 Key Results (Chapter 4 — Actual Kaggle Output)")
+        for metric, desc in [
+            ("100.00%",  "RF Classifier Accuracy (class-imbalance artefact)"),
+            ("32.01h",   "ANN RUL Prediction Error (MAE)"),
+            ("67.5%",    "Cost Reduction vs Conventional Maintenance"),
+            ("€162,000", "Annual Savings per Engine"),
+        ]:
+            st.write(f"**{metric}** — {desc}")
+
+    st.markdown("---")
+    st.subheader("🛠️ Technology Stack")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.write("**Frontend**\n• Streamlit\n• Plotly\n• Pandas")
+    c2.write("**ML & Data**\n• Python\n• Scikit-learn\n• TensorFlow")
+    c3.write("**Data Processing**\n• NumPy\n• Pandas\n• Seaborn")
+    c4.write("**Deployment**\n• Streamlit Cloud\n• Kaggle\n• GitHub")
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PAGE: REAL-TIME MONITORING
+# ═════════════════════════════════════════════════════════════════════════════
 elif page == "📈 Real-Time Monitoring":
     st.title("📈 Real-Time Engine Monitoring")
-    st.markdown("**Built by INYA-OKO, RAYMOND EKUMA** - Live sensor data and health status")
+    st.markdown(f"**INYA-OKO, RAYMOND EKUMA** — Live sensor data | "
+                f"Last updated: `{datetime.now().strftime('%H:%M:%S')}`")
     st.markdown("---")
-    
-    # Get latest sensor data
-    latest_data = st.session_state.sensor_data.iloc[-1]
-    
-    # Health Status
+
+    # Live state banner
+    st.markdown(
+        f"<div class='state-banner' style='background:{state_profile['color']};'>"
+        f"{state_profile['emoji']}  ENGINE STATE: {state_profile['state']}  {state_profile['emoji']}</div>",
+        unsafe_allow_html=True
+    )
+
+    latest = st.session_state.sensor_data.iloc[-1]
+
     health_status, health_score, health_emoji = HealthStatusCalculator.get_health_status({
-        'oil_temperature': latest_data['oil_temperature'],
-        'egt': latest_data['egt'],
-        'vibration': latest_data['vibration'],
-        'oil_pressure': latest_data['oil_pressure'],
+        'oil_temperature': latest['oil_temperature'],
+        'egt':             latest['egt'],
+        'vibration':       latest['vibration'],
+        'oil_pressure':    latest['oil_pressure'],
     })
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.metric("Engine Health Status", f"{health_emoji} {health_status}", "Current")
-    
-    with col2:
-        rul = HealthStatusCalculator.calculate_rul(health_score)
-        st.metric("RUL Estimate", f"{rul:.1f}h", "Remaining Hours")
-    
-    with col3:
-        maintenance_rec = HealthStatusCalculator.get_maintenance_recommendation(rul)
-        st.write(f"**Maintenance:** {maintenance_rec}")
-    
+    rul = HealthStatusCalculator.calculate_rul(health_score)
+    rec = HealthStatusCalculator.get_maintenance_recommendation(rul)
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Engine Health",   f"{health_emoji} {health_status}", "Current")
+    c2.metric("RUL Estimate",    f"{rul:.1f} h",                    "Remaining Useful Life")
+    with c3:
+        st.write("**Maintenance Recommendation**")
+        st.info(rec)
+
     st.markdown("---")
-    
-    # Sensor Readings
     st.subheader("Current Sensor Readings")
-    
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.metric("Oil Temperature", f"{latest_data['oil_temperature']:.1f}°C", "Normal: 70-90°C")
-    
-    with col2:
-        st.metric("Coolant Temperature", f"{latest_data['coolant_temperature']:.1f}°C", "Normal: 80-95°C")
-    
-    with col3:
-        st.metric("EGT", f"{latest_data['egt']:.1f}°C", "Normal: 300-450°C")
-    
-    with col4:
-        st.metric("Vibration", f"{latest_data['vibration']:.2f}g", "Normal: 0-3g")
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.metric("Oil Pressure", f"{latest_data['oil_pressure']:.0f}kPa", "Normal: 250-400kPa")
-    
-    with col2:
-        st.metric("Fuel Pressure", f"{latest_data['fuel_pressure']:.0f}kPa", "Normal: 1500-2000kPa")
-    
-    with col3:
-        st.metric("RPM", f"{latest_data['rpm']:.0f}", "Normal: 1200-1800")
-    
+
+    # Colour-code metric delta based on state
+    def delta_label(sensor, value, normal_range):
+        lo, hi = normal_range
+        if value < lo or value > hi:
+            return f"⚠️ Out of range ({lo}–{hi})"
+        return f"✅ Normal ({lo}–{hi})"
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Oil Temperature",    f"{latest['oil_temperature']:.1f} °C",   delta_label("oil_temp",    latest['oil_temperature'],    (70, 100)))
+    c2.metric("Coolant Temperature",f"{latest['coolant_temperature']:.1f} °C",delta_label("coolant",    latest['coolant_temperature'], (80, 100)))
+    c3.metric("EGT",                f"{latest['egt']:.1f} °C",               delta_label("egt",         latest['egt'],                 (300, 500)))
+    c4.metric("Vibration",          f"{latest['vibration']:.2f} g",          delta_label("vibration",   latest['vibration'],           (0, 4)))
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Oil Pressure",  f"{latest['oil_pressure']:.0f} kPa",  delta_label("oil_p",  latest['oil_pressure'],  (200, 400)))
+    c2.metric("Fuel Pressure", f"{latest['fuel_pressure']:.0f} kPa", delta_label("fuel_p", latest['fuel_pressure'], (1500, 2000)))
+    c3.metric("RPM",           f"{latest['rpm']:.0f}",               delta_label("rpm",    latest['rpm'],           (1200, 1800)))
+
     st.markdown("---")
-    
-    # Time Series Charts
-    st.subheader("Sensor Trends (Last 100 readings)")
-    
-    recent_data = st.session_state.sensor_data.tail(100).copy()
-    recent_data['index'] = range(len(recent_data))
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
+    st.subheader("📉 Sensor Trends — Last 100 Readings")
+    st.caption(f"State coloring reflects engine condition. Current state: **{state_profile['state']}**")
+
+    recent = st.session_state.sensor_data.tail(100).copy().reset_index(drop=True)
+    recent['index'] = range(len(recent))
+    sc = state_profile['color']  # use state colour for live traces
+
+    c1, c2 = st.columns(2)
+    with c1:
         fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=recent_data['index'],
-            y=recent_data['oil_temperature'],
-            name='Oil Temp',
-            line=dict(color='#FF6B6B')
-        ))
-        fig.add_trace(go.Scatter(
-            x=recent_data['index'],
-            y=recent_data['coolant_temperature'],
-            name='Coolant Temp',
-            line=dict(color='#4ECDC4')
-        ))
-        fig.update_layout(
-            title="Temperature Sensors",
-            xaxis_title="Time Index",
-            yaxis_title="Temperature (°C)",
-            hovermode='x unified',
-            height=400
-        )
-        st.plotly_chart(fig, use_container_width=True)
-    
-    with col2:
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=recent_data['index'],
-            y=recent_data['vibration'],
-            name='Vibration',
-            line=dict(color='#FFD93D')
-        ))
-        fig.update_layout(
-            title="Vibration Levels",
-            xaxis_title="Time Index",
-            yaxis_title="Vibration (g)",
-            hovermode='x unified',
-            height=400
-        )
-        st.plotly_chart(fig, use_container_width=True)
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=recent_data['index'],
-            y=recent_data['oil_pressure'],
-            name='Oil Pressure',
-            line=dict(color='#6BCB77')
-        ))
-        fig.add_trace(go.Scatter(
-            x=recent_data['index'],
-            y=recent_data['fuel_pressure'],
-            name='Fuel Pressure',
-            line=dict(color='#4D96FF')
-        ))
-        fig.update_layout(
-            title="Pressure Sensors",
-            xaxis_title="Time Index",
-            yaxis_title="Pressure (kPa)",
-            hovermode='x unified',
-            height=400
-        )
-        st.plotly_chart(fig, use_container_width=True)
-    
-    with col2:
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=recent_data['index'],
-            y=recent_data['rpm'],
-            name='RPM',
-            line=dict(color='#9B59B6')
-        ))
-        fig.update_layout(
-            title="Engine RPM",
-            xaxis_title="Time Index",
-            yaxis_title="RPM",
-            hovermode='x unified',
-            height=400
-        )
+        fig.add_trace(go.Scatter(x=recent['index'], y=recent['oil_temperature'],
+            name='Oil Temp', line=dict(color=sc, width=2)))
+        fig.add_trace(go.Scatter(x=recent['index'], y=recent['coolant_temperature'],
+            name='Coolant Temp', line=dict(color='#4ECDC4', width=2, dash='dot')))
+        # threshold lines
+        fig.add_hline(y=100, line_dash="dash", line_color="red",   annotation_text="Oil Temp Limit 100°C")
+        fig.update_layout(title="Temperature Sensors", xaxis_title="Reading Index",
+            yaxis_title="°C", hovermode='x unified', height=380)
         st.plotly_chart(fig, use_container_width=True)
 
-# Page: Analytics
+    with c2:
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=recent['index'], y=recent['vibration'],
+            name='Vibration', line=dict(color=sc, width=2),
+            fill='tozeroy', fillcolor=sc.replace(')', ',0.1)').replace('rgb','rgba') if 'rgb' in sc else sc))
+        fig.add_hline(y=4, line_dash="dash", line_color="red", annotation_text="Vibration Limit 4g")
+        fig.update_layout(title="Vibration Level", xaxis_title="Reading Index",
+            yaxis_title="g", hovermode='x unified', height=380)
+        st.plotly_chart(fig, use_container_width=True)
+
+    c1, c2 = st.columns(2)
+    with c1:
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=recent['index'], y=recent['oil_pressure'],
+            name='Oil Pressure', line=dict(color=sc, width=2)))
+        fig.add_trace(go.Scatter(x=recent['index'], y=recent['fuel_pressure'],
+            name='Fuel Pressure', line=dict(color='#4D96FF', width=2, dash='dot'),
+            yaxis='y2'))
+        fig.add_hline(y=200, line_dash="dash", line_color="red", annotation_text="Oil Pressure Min 200kPa")
+        fig.update_layout(title="Pressure Sensors", xaxis_title="Reading Index",
+            yaxis_title="Oil Pressure (kPa)", hovermode='x unified', height=380,
+            yaxis2=dict(title="Fuel Pressure (kPa)", overlaying='y', side='right'))
+        st.plotly_chart(fig, use_container_width=True)
+
+    with c2:
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=recent['index'], y=recent['egt'],
+            name='EGT', line=dict(color=sc, width=2)))
+        fig.add_hline(y=500, line_dash="dash", line_color="red", annotation_text="EGT Limit 500°C")
+        fig.update_layout(title="Exhaust Gas Temperature (EGT)", xaxis_title="Reading Index",
+            yaxis_title="°C", hovermode='x unified', height=380)
+        st.plotly_chart(fig, use_container_width=True)
+
+    # RPM full width
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=recent['index'], y=recent['rpm'],
+        name='RPM', line=dict(color=sc, width=2)))
+    fig.add_hrect(y0=1200, y1=1800, fillcolor="green", opacity=0.08,
+        annotation_text="Normal RPM Range", annotation_position="top left")
+    fig.update_layout(title="Engine RPM", xaxis_title="Reading Index",
+        yaxis_title="RPM", hovermode='x unified', height=280)
+    st.plotly_chart(fig, use_container_width=True)
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PAGE: ANALYTICS
+# ═════════════════════════════════════════════════════════════════════════════
 elif page == "🤖 Analytics":
     st.title("🤖 Machine Learning Analytics")
-    st.markdown("**Built by INYA-OKO, RAYMOND EKUMA** — Results from actual Kaggle notebook output (Chapter 4)")
+    st.markdown("**INYA-OKO, RAYMOND EKUMA** — Results from actual Kaggle notebook output (Chapter 4)")
     st.markdown("---")
-    
-    ml_results = st.session_state.ml_results
-    
-    # Model Performance
+
+    ml = st.session_state.ml_results
+
     st.subheader("Model Performance Metrics")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
+    c1, c2 = st.columns(2)
+    with c1:
         st.write("**Random Forest Classifier (Anomaly Detection)**")
-        # Chapter 4, Table 4.2 — ACTUAL RESULTS
-        metrics_rf = [
-            ("Accuracy",  f"{ml_results['random_forest']['accuracy']*100:.2f}%"),
-            ("Precision", f"{ml_results['random_forest']['precision']*100:.2f}%"),
-            ("Recall",    f"{ml_results['random_forest']['recall']*100:.2f}%"),
-            ("F1-Score",  f"{ml_results['random_forest']['f1_score']*100:.2f}%"),
-            ("AUC-ROC",   "NaN (undefined — class imbalance)"),
-        ]
-        for metric, value in metrics_rf:
-            st.write(f"• {metric}: **{value}**")
-
-    
-    with col2:
+        for m, v in [
+            ("Accuracy",  f"{ml['random_forest']['accuracy']*100:.2f}%"),
+            ("Precision", f"{ml['random_forest']['precision']*100:.2f}%"),
+            ("Recall",    f"{ml['random_forest']['recall']*100:.2f}%"),
+            ("F1-Score",  f"{ml['random_forest']['f1_score']*100:.2f}%"),
+            ("AUC-ROC",   "NaN (class imbalance)"),
+        ]:
+            st.write(f"• {m}: **{v}**")
+    with c2:
         st.write("**Artificial Neural Network (RUL Prediction)**")
-        # Chapter 4, Table 4.3 — ACTUAL RESULTS
-        metrics_ann = [
-            ("MAE",   f"{ml_results['ann']['mae']:.4f} hours"),
-            ("RMSE",  f"{ml_results['ann']['rmse']:.4f} hours"),
-            ("R² Score", f"{ml_results['ann']['r2_score']:.4f}"),
-            ("MAPE",  f"{ml_results['ann']['mape']*100:.2f}%"),
-        ]
-        for metric, value in metrics_ann:
-            st.write(f"• {metric}: **{value}**")
-    
-    st.markdown("---")
-    
-    # Feature Importance
-    st.subheader("Feature Importance Analysis")
-    
-    features = list(ml_results['feature_importance'].keys())
-    importances = list(ml_results['feature_importance'].values())
-    
-    fig = go.Figure(data=[
-        go.Bar(
-            x=importances,
-            y=features,
-            orientation='h',
-            marker=dict(color='#1f77b4')
-        )
-    ])
-    fig.update_layout(
-        title="Feature Importance in Anomaly Detection",
-        xaxis_title="Importance Score",
-        yaxis_title="Feature",
-        height=400
-    )
-    st.plotly_chart(fig, use_container_width=True)
-    
-    st.markdown("---")
-    
-    # Prediction Accuracy — Chapter 4, Table 4.3 actual values
-    st.subheader("RUL Prediction Accuracy")
-    
-    accuracy_data = {
-        'Tolerance': ['±5 hours', '±10 hours', '±20 hours'],
-        'Accuracy': [
-            ml_results['ann']['accuracy_5h'] * 100,   # 9.80%
-            ml_results['ann']['accuracy_10h'] * 100,  # 18.90%
-            ml_results['ann']['accuracy_20h'] * 100   # 37.95%
-        ]
-    }
-    
-    fig = go.Figure(data=[
-        go.Bar(
-            x=accuracy_data['Tolerance'],
-            y=accuracy_data['Accuracy'],
-            marker=dict(color=['#FF6B6B', '#4ECDC4', '#6BCB77'])
-        )
-    ])
-    fig.update_layout(
-        title="RUL Prediction Accuracy at Different Tolerances (Chapter 4, Table 4.3)",
-        yaxis_title="Accuracy (%)",
-        height=400
-    )
-    st.plotly_chart(fig, use_container_width=True)
-    
-    st.markdown("---")
-    
-    # Cost-Benefit Analysis — Chapter 4, Section 4.4.1 actual values
-    st.subheader("Cost-Benefit Analysis")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        costs = {
-            'Conventional': ml_results['cost_benefit']['conventional_annual'],  # €240,000
-            'Digital Twin': ml_results['cost_benefit']['digital_twin_annual']   # €78,000
-        }
-        
-        fig = go.Figure(data=[
-            go.Bar(
-                x=list(costs.keys()),
-                y=list(costs.values()),
-                marker=dict(color=['#FF6B6B', '#6BCB77'])
-            )
-        ])
-        fig.update_layout(
-            title="Annual Maintenance Cost Comparison (per Engine)",
-            yaxis_title="Cost (€)",
-            height=400
-        )
-        st.plotly_chart(fig, use_container_width=True)
-    
-    with col2:
-        st.write("**Economic Impact (Chapter 4, Section 4.4)**")
-        st.metric(
-            "Annual Savings per Engine",
-            format_currency(ml_results['cost_benefit']['savings']),           # €162,000
-            f"{format_percent(ml_results['cost_benefit']['savings_percentage'])} reduction"  # 67.5%
-        )
-        st.metric(
-            "Fleet Annual Savings (100 engines)",
-            format_currency(ml_results['cost_benefit']['fleet_annual_savings']),  # €16,200,000
-            "100-engine fleet"
-        )
-        st.metric(
-            "Payback Period",
-            f"{ml_results['cost_benefit']['payback_months']:.1f} months",   # 37.0 months
-            f"({ml_results['cost_benefit']['payback_years']} years)"         # 3.1 years
-        )
+        for m, v in [
+            ("MAE",      f"{ml['ann']['mae']:.4f} hours"),
+            ("RMSE",     f"{ml['ann']['rmse']:.4f} hours"),
+            ("R² Score", f"{ml['ann']['r2_score']:.4f}"),
+            ("MAPE",     f"{ml['ann']['mape']*100:.2f}%"),
+        ]:
+            st.write(f"• {m}: **{v}**")
 
-# Page: Documentation
+    st.markdown("---")
+    st.subheader("Feature Importance")
+    features    = list(ml['feature_importance'].keys())
+    importances = list(ml['feature_importance'].values())
+    fig = go.Figure(go.Bar(x=importances, y=features, orientation='h',
+        marker=dict(color='#1f77b4')))
+    fig.update_layout(title="Feature Importance in Anomaly Detection",
+        xaxis_title="Importance Score", height=350)
+    st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown("---")
+    st.subheader("RUL Prediction Accuracy at Different Tolerances")
+    fig = go.Figure(go.Bar(
+        x=['±5 hours', '±10 hours', '±20 hours'],
+        y=[ml['ann']['accuracy_5h']*100, ml['ann']['accuracy_10h']*100, ml['ann']['accuracy_20h']*100],
+        marker=dict(color=['#FF6B6B', '#4ECDC4', '#6BCB77'])
+    ))
+    fig.update_layout(yaxis_title="Accuracy (%)", height=350)
+    st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown("---")
+    st.subheader("Cost-Benefit Analysis")
+    c1, c2 = st.columns(2)
+    with c1:
+        fig = go.Figure(go.Bar(
+            x=['Conventional', 'Digital Twin'],
+            y=[ml['cost_benefit']['conventional_annual'], ml['cost_benefit']['digital_twin_annual']],
+            marker=dict(color=['#FF6B6B', '#6BCB77'])
+        ))
+        fig.update_layout(title="Annual Maintenance Cost (per Engine)",
+            yaxis_title="Cost (€)", height=380)
+        st.plotly_chart(fig, use_container_width=True)
+    with c2:
+        st.metric("Annual Savings per Engine",
+            format_currency(ml['cost_benefit']['savings']),
+            f"{format_percent(ml['cost_benefit']['savings_percentage'])} reduction")
+        st.metric("Fleet Annual Savings (100 engines)",
+            format_currency(ml['cost_benefit']['fleet_annual_savings']), "100-engine fleet")
+        st.metric("Payback Period",
+            f"{ml['cost_benefit']['payback_months']:.1f} months",
+            f"({ml['cost_benefit']['payback_years']} years)")
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PAGE: DOCUMENTATION
+# ═════════════════════════════════════════════════════════════════════════════
 elif page == "📋 Documentation":
     st.title("📋 Project Documentation")
-    st.markdown("**Built by INYA-OKO, RAYMOND EKUMA** — Digital Twin Framework for CAT C4.4 Engine")
+    st.markdown("**INYA-OKO, RAYMOND EKUMA** — Digital Twin Framework for CAT C4.4 Engine")
     st.markdown("---")
-
     st.subheader("Dataset Summary (Chapter 4, Section 4.2)")
     st.write("""
     - **Total records:** 34,500 (26,000 synthetic + 8,500 Kaggle)
-    - **Training set (70%):** 24,150 records
-    - **Validation set (15%):** 5,175 records
-    - **Test set (15%):** 5,175 records
-    - **Features per record:** 7 sensor inputs + 2 derived features
-    - **Engines represented:** 15 distinct units
-    - **Temporal coverage:** 12 months
+    - **Training set (70%):** 24,150 | **Validation (15%):** 5,175 | **Test (15%):** 5,175
+    - **Features:** 7 sensor inputs + 2 derived | **Engines:** 15 units | **Period:** 12 months
     """)
-
     st.subheader("Results Summary (Chapter 4 — Actual Kaggle Output)")
     st.write("""
-    **Random Forest Classifier**
-    - Accuracy: 100.00% *(class-imbalance artefact — see Chapter 4.6.1)*
-    - Precision / Recall / F1: 0.00% *(model predicts majority class only)*
-    - AUC-ROC: NaN
+    **Random Forest** — Accuracy: 100.00% | Precision/Recall/F1: 0.00% | AUC-ROC: NaN
 
-    **Neural Network (RUL Prediction)**
-    - MAE: 32.0126 hours
-    - RMSE: 39.9448 hours
-    - R²: 0.5251 (explains 52.51% of variance)
-    - MAPE: 8.16%
-    - Accuracy ±5h / ±10h / ±20h: 9.80% / 18.90% / 37.95%
+    **Neural Network** — MAE: 32.0126h | RMSE: 39.9448h | R²: 0.5251 | MAPE: 8.16%
+    Accuracy ±5h / ±10h / ±20h: 9.80% / 18.90% / 37.95%
 
-    **Economic Impact**
-    - Conventional maintenance: €240,000/year per engine
-    - Digital Twin maintenance: €78,000/year per engine
-    - Annual savings: €162,000 (67.5%)
-    - Fleet savings (100 engines): €16,200,000/year
-    - Payback period: 37.0 months (3.1 years)
+    **Economic** — Conventional: €240,000/yr | Digital Twin: €78,000/yr
+    Savings: €162,000 (67.5%) | Fleet (100): €16.2M/yr | Payback: 37 months
     """)
+    st.subheader("Engine State Simulation Cycle")
+    st.write("The live dashboard cycles through 4 states on a 90-second loop:")
+    for s in STATE_CYCLE:
+        st.write(f"{s['emoji']} **{s['state']}** — {s['duration']}s — sensors tuned to realistic {s['state'].lower()} readings")
 
-# Page: About Developer
+# ═════════════════════════════════════════════════════════════════════════════
+# PAGE: ABOUT DEVELOPER
+# ═════════════════════════════════════════════════════════════════════════════
 elif page == "👨‍💻 About Developer":
     st.title("👨‍💻 About the Developer")
     st.markdown("---")
-
-    col1, col2 = st.columns([1, 2])
-    with col1:
+    c1, c2 = st.columns([1, 2])
+    with c1:
         st.markdown("## INYA-OKO, RAYMOND EKUMA")
         st.write("Master's Thesis Project")
-        st.write("Digital Twin Framework for Optimized Predictive Maintenance: A Case Study of the Caterpillar C4.4 Engine")
-
-    with col2:
+        st.write("Digital Twin Framework for Optimized Predictive Maintenance: "
+                 "A Case Study of the Caterpillar C4.4 Engine")
+    with c2:
         st.subheader("Project Achievements (Actual Chapter 4 Results)")
-        achievements = [
-            ("100.00%", "RF Classifier Accuracy (class-imbalance artefact)"),
-            ("32.01h",  "ANN RUL Prediction MAE"),
-            ("0.5251",  "ANN R² Score"),
-            ("67.5%",   "Cost Reduction"),
-            ("€162,000","Annual Savings per Engine"),
-            ("€16.2M",  "Fleet Annual Savings (100 engines)"),
+        for m, d in [
+            ("100.00%",  "RF Classifier Accuracy (class-imbalance artefact)"),
+            ("32.01h",   "ANN RUL Prediction MAE"),
+            ("0.5251",   "ANN R² Score"),
+            ("67.5%",    "Cost Reduction"),
+            ("€162,000", "Annual Savings per Engine"),
+            ("€16.2M",   "Fleet Annual Savings (100 engines)"),
             ("37 months","Payback Period"),
-        ]
-        for metric, description in achievements:
-            st.write(f"**{metric}** — {description}")
+        ]:
+            st.write(f"**{m}** — {d}")
+
+# ═════════════════════════════════════════════════════════════════════════════
+# AUTO-RERUN every 10 seconds  ← THIS IS THE KEY LINE
+# ═════════════════════════════════════════════════════════════════════════════
+time.sleep(10)
+st.rerun()
