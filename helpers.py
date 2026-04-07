@@ -117,10 +117,11 @@ class SensorDataGenerator:
     def generate_data(self, n_samples: int = 1000) -> pd.DataFrame:
         """Generate initial synthetic history at startup."""
         np.random.seed(self.seed)
-        time_index = pd.date_range(
-            start=datetime.now() - timedelta(seconds=10 * n_samples),
-            periods=n_samples, freq='10s'          # ← FIXED: was '10S' (deprecated in pandas 2.2)
-        )
+
+        # Build timestamp list manually — avoids all pandas freq string issues
+        base_time = datetime.now() - timedelta(seconds=10 * n_samples)
+        time_index = [base_time + timedelta(seconds=10 * i) for i in range(n_samples)]
+
         t = np.linspace(0, 4 * np.pi, n_samples)
 
         oil_temp      = 75   + 15  * np.sin(t) + np.random.normal(0, 2,   n_samples)
