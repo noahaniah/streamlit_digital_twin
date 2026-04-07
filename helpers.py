@@ -119,7 +119,7 @@ class SensorDataGenerator:
         np.random.seed(self.seed)
         time_index = pd.date_range(
             start=datetime.now() - timedelta(seconds=10 * n_samples),
-            periods=n_samples, freq='10S'
+            periods=n_samples, freq='10s'          # ← FIXED: was '10S' (deprecated in pandas 2.2)
         )
         t = np.linspace(0, 4 * np.pi, n_samples)
 
